@@ -11,7 +11,6 @@ from . import slicer, timeutils
 
 @dataclass(frozen=True)
 class SLWindow:
-    """Minimal window representing an SLrun entry."""
     date_str: str
     start: str
     end: str
@@ -20,12 +19,6 @@ class SLWindow:
 
 
 def parse_slrun_lines(lines: Iterable[str], tz: str = "UTC") -> List[SLWindow]:
-    """
-    Parse lines from an SLrunLong.txt-like file.
-
-    Header expected: date, start, entry, exit, end
-    We only keep date, start and end (plus computed timestamps).
-    """
     out: List[SLWindow] = []
     first = True
     for raw in lines:
@@ -43,24 +36,11 @@ def parse_slrun_lines(lines: Iterable[str], tz: str = "UTC") -> List[SLWindow]:
         start_ts, end_ts = timeutils.window_start_end(
             date_str, start, end, tz=tz, to_ms=False
         )
-        out.append(
-            SLWindow(
-                date_str=date_str,
-                start=start,
-                end=end,
-                start_ts=start_ts,
-                end_ts=end_ts,
-            )
-        )
+        out.append(SLWindow(date_str, start, end, start_ts, end_ts))
     return out
 
 
 def format_window_filename(csv_path: Path, w: SLWindow) -> str:
-    """
-    Format a safe filename for the window.
-
-    Example: gc_1min_2024-10-13_17-00__07-00.csv
-    """
     m, d, y = [int(x) for x in w.date_str.split("/")]
     year = 2000 + y if y < 100 else y
     date_iso = f"{year:04d}-{m:02d}-{d:02d}"
@@ -78,11 +58,6 @@ def extract_from_slrun(
     force: bool = False,
     continue_on_error: bool = False,
 ) -> List[Path]:
-    """
-    Extract windows defined in slrun_path from csv_path.
-
-    Returns list of output file paths created (or overwritten if force).
-    """
     if out_dir is None:
         out_dir = csv_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +70,6 @@ def extract_from_slrun(
         fname = format_window_filename(csv_path, w)
         outp = out_dir / fname
         if outp.exists() and not force:
-            # skip existing unless force True
             continue
         try:
             _ = slicer.slice_csv_window(
@@ -119,7 +93,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-dir", default=None,
                    help="Directory to write per-window CSVs")
     p.add_argument("--tz", default="UTC",
-                   help="Timezone name for parsing dates (e.g. UTC)")
+                   help="Timezone name for parsing dates")
     p.add_argument("--force", action="store_true",
                    help="Overwrite existing outputs")
     p.add_argument("--continue-on-error", action="store_true",

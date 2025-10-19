@@ -5,12 +5,16 @@ from typing import Tuple, Union
 
 try:
     from zoneinfo import ZoneInfo
-except Exception:  # pragma: no cover - older Pythons
+except Exception:
     ZoneInfo = None  # type: ignore
+
+import logging
+
+LOGGER = logging.getLogger("tvparser.timeutils")
 
 
 def _parse_date(date_str: str) -> Tuple[int, int, int]:
-    """Parse date 'MM/DD/YY' or 'MM/DD/YYYY' -> (year, month, day)."""
+    """Parse 'MM/DD/YY' or 'MM/DD/YYYY' -> (year, month, day)."""
     parts = date_str.strip().split("/")
     if len(parts) != 3:
         raise ValueError("date must be MM/DD/YY or MM/DD/YYYY")
@@ -23,7 +27,7 @@ def _parse_date(date_str: str) -> Tuple[int, int, int]:
 
 
 def _parse_time(time_str: str) -> Tuple[int, int]:
-    """Parse time like 'HH:MM' or 'H:MM' into (hour, minute)."""
+    """Parse 'HH:MM' or 'H:MM' into (hour, minute)."""
     parts = time_str.strip().split(":")
     if len(parts) != 2:
         raise ValueError("time must be HH:MM")
@@ -34,6 +38,17 @@ def _parse_time(time_str: str) -> Tuple[int, int]:
     return hour, minute
 
 
+def _tzinfo_for_name(tz: Union[str, None]) -> timezone:
+    """Return tzinfo from name; fallback to UTC if ZoneInfo missing."""
+    if tz is None or tz == "UTC":
+        return timezone.utc
+    if ZoneInfo is None:
+        # zoneinfo not available; warn and fall back to UTC
+        LOGGER.debug("zoneinfo not available, falling back to UTC for %s", tz)
+        return timezone.utc
+    return ZoneInfo(tz)
+
+
 def to_timestamp(
     date_str: str,
     time_str: str,
@@ -42,23 +57,16 @@ def to_timestamp(
     to_ms: bool = False,
 ) -> int:
     """
-    Convert date + time strings to a unix timestamp.
+    Convert date + time to unix epoch seconds (or ms if to_ms=True).
 
-    - date_str: 'MM/DD/YY' or 'MM/DD/YYYY'
-    - time_str: 'HH:MM' (24h)
-    - tz: timezone name (e.g. 'UTC' or 'America/Chicago') or None -> UTC
-    - to_ms: return milliseconds if True (default: seconds)
+    date_str: 'MM/DD/YY' or 'MM/DD/YYYY'
+    time_str: 'HH:MM'
+    tz: IANA name (e.g. 'America/Chicago') or 'UTC' or None -> UTC
     """
     year, month, day = _parse_date(date_str)
     hour, minute = _parse_time(time_str)
 
-    if tz is None or tz == "UTC":
-        tzinfo = timezone.utc
-    else:
-        if ZoneInfo is None:
-            raise RuntimeError("zoneinfo not available for tz names")
-        tzinfo = ZoneInfo(tz)
-
+    tzinfo = _tzinfo_for_name(tz)
     dt = datetime(year, month, day, hour, minute, tzinfo=tzinfo)
     ts = int(dt.timestamp())
     return ts * 1000 if to_ms else ts
@@ -73,24 +81,18 @@ def window_start_end(
     to_ms: bool = False,
 ) -> Tuple[int, int]:
     """
-    Return (start_ts, end_ts) for a window starting on date_str/start_time.
+    Return (start_ts, end_ts) in seconds (unless to_ms=True).
 
-    If end_time is earlier than or equal to start_time we assume the end is
-    on the next calendar day (e.g. start 17:00 end 07:00 -> next day).
+    If end_time <= start_time, end is assumed next calendar day.
     """
-    # compute in seconds first
     start = to_timestamp(date_str, start_time, tz=tz, to_ms=False)
     end = to_timestamp(date_str, end_time, tz=tz, to_ms=False)
 
     if end <= start:
-        # end is next day in same timezone
+        # end on next day
         year, month, day = _parse_date(date_str)
         ehour, emin = _parse_time(end_time)
-        if tz is None or tz == "UTC":
-            tzinfo = timezone.utc
-        else:
-            tzinfo = ZoneInfo(tz) if ZoneInfo is not None else timezone.utc
-
+        tzinfo = _tzinfo_for_name(tz)
         end_dt = datetime(year, month, day, ehour, emin, tzinfo=tzinfo)
         end_dt = end_dt + timedelta(days=1)
         end = int(end_dt.timestamp())
