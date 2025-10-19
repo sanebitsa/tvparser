@@ -1,0 +1,64 @@
+[project]
+name = "tvparser"
+version = "0.1.0"
+description = "TVParser — utilities to parse, normalize, and merge TradingView CSV exports (timestamps kept in seconds)."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Your Name", email = "you@example.com" }
+]
+license = { text = "MIT" }
+
+dependencies = [
+  "pandas>=1.5,<3.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.0.281",
+  "black>=23.9.1",
+  "isort>=5.12.0",
+  "mypy>=1.4.0",
+  "pytest>=7.4.0"
+]
+
+[project.scripts]
+tvparser = "tvparser.cli:main"
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+include_trailing_comma = true
+line_length = 88
+
+# Keep general ruff settings at top-level and put linter-specific settings under `lint`
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+# A sensible default set of rules; tune as your project grows
+select = ["E", "F", "W", "C", "I", "B", "TC"]
+ignore = []
+exclude = ["build", "dist", ".venv", "__pycache__", "node_modules"]
+
+# Use TOML table for per-file-ignores
+per-file-ignores = { "src/tvparser/__init__.py" = ["F401"] }
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+allow_redefinition = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
