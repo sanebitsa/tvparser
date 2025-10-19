@@ -29,10 +29,6 @@ tvparser = "tvparser.cli:main"
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.black]
-line-length = 88
-target-version = ["py311"]
-
 [tool.isort]
 profile = "black"
 multi_line_output = 3
@@ -41,9 +37,6 @@ line_length = 88
 
 # Keep general ruff settings at top-level and put linter-specific settings under `lint`
 [tool.ruff]
-line-length = 88
-
-[tool.black]
 line-length = 88
 
 [tool.ruff.lint]
@@ -65,3 +58,8 @@ allow_redefinition = false
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-q"
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
