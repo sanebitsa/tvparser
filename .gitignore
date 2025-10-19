@@ -8,3 +8,10 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 Thumbs.db
+dist/
+build/
+*.egg-info/
+*.egg-info
+.eggs/
+.env
+.env.*
