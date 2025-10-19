@@ -1,9 +1,10 @@
+# tests/integration/test_extract_slrun.py
 from __future__ import annotations
 
 import csv
 from typing import TYPE_CHECKING, List
 
-from tvparser import extract_slrun
+from tvparser import extract_patterns
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -41,7 +42,7 @@ def _read_ts_list(p: Path) -> List[int]:
         return [int(r["ts"]) for r in rdr]
 
 
-def test_extract_slrun_end_to_end(tmp_path: Path) -> None:
+def test_extract_patterns_end_to_end(tmp_path: Path) -> None:
     """
     Integration: parse the SLrun file and extract windows from the CSV.
     Validates that the expected per-window files are created and contain
@@ -57,7 +58,7 @@ def test_extract_slrun_end_to_end(tmp_path: Path) -> None:
     _write_sample_csv(csv_path)
     _write_slrun(slrun_path)
 
-    rc = extract_slrun.main(
+    rc = extract_patterns.main(
         [
             "--slrun",
             str(slrun_path),
@@ -76,7 +77,6 @@ def test_extract_slrun_end_to_end(tmp_path: Path) -> None:
     assert len(files) == 2
 
     # Identify which file is which by start-time in filename
-    # find file that contains "17-00" and the one with "00-00"
     file_17 = next((f for f in files if "17-00" in f.name), None)
     file_00 = next((f for f in files if "00-00" in f.name), None)
 
@@ -85,7 +85,6 @@ def test_extract_slrun_end_to_end(tmp_path: Path) -> None:
 
     # For 17:00 -> 07:00 next day we expect rows within our sample range
     ts_list_17 = _read_ts_list(file_17)
-    # ensure there is at least one timestamp present
     assert len(ts_list_17) > 0
     assert min(ts_list_17) >= 1728252000
     assert max(ts_list_17) <= 1728252480
