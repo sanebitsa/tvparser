@@ -1,103 +1,88 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
+import re
+from numbers import Number
+from typing import TYPE_CHECKING, Any, Dict, List
 
-from tests.support.json_helpers import canonical_records_from_csv
-from tvparser import csv2json
+import pandas as pd
 
-BASE_CSV = """time,open,high,low,close,Volume
-1736722800,2716.8,2717.9,2715.1,2716.1,292
-1736722860,2716.1,2716.4,2714,2715.1,165
-1736722920,2715.1,2715.8,2714.5,2714.5,87
-1736722980,2714.8,2716.6,2714.2,2716.4,69
-1736723040,2716.3,2717.5,2715.3,2717,109
-1736723100,2716.9,2717.8,2716.6,2717,66
-1736723160,2717,2717.3,2715.7,2716,61
-1736723220,2716.2,2716.7,2716.1,2716.1,45
-1736723280,2716.3,2717.2,2716.2,2717,28
-1736723340,2716.9,2717.5,2716.9,2717.3,27
-"""
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
-def _ensure_test_csv(path: Path) -> None:
-    """Write canonical CSV used by these integration tests."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(BASE_CSV)
+def _to_camel(s: str) -> str:
+    s = re.sub(r"[^\w\s]", "", s).strip()
+    if not s:
+        return s
+    parts = re.split(r"[_\s]+", s)
+    head = parts[0].lower()
+    tail = "".join(p.title() for p in parts[1:])
+    return head + tail
 
 
-def test_csv_to_ndjson_and_dts_matches_expected(tmp_path: Path) -> None:
+def _coerce_time_series(s: pd.Series) -> pd.Series:
     """
-    Convert the test CSV to NDJSON + .d.ts (camelCase) and assert output
-    semantically matches expected records derived from the CSV.
+    Coerce a Series of timestamps to integer seconds.
+
+    Heuristic: if median > 1e12 treat as ms and divide by 1000.
     """
-    data_dir = Path("tests") / "data"
-    in_path = data_dir / "gc_011224_020524_1m.csv"
-    _ensure_test_csv(in_path)
-
-    expected = canonical_records_from_csv(in_path, camel_case=True)
-
-    out = tmp_path / "merged.jsonl"
-    dts_path = out.with_suffix(out.suffix + ".d.ts")
-
-    csv2json.csv_to_ndjson(
-        input_path=in_path,
-        output_path=out,
-        camel_case=True,
-        generate_dts=True,
-        interface_name="MergedRow",
-    )
-
-    assert out.exists()
-    assert dts_path.exists()
-
-    # read NDJSON and parse objects
-    lines = out.read_text(encoding="utf-8").splitlines()
-    actual = [json.loads(line) for line in lines]
-
-    assert len(actual) == len(expected)
-    # Compare records one-by-one for semantic equality
-    for exp, act in zip(expected, actual, strict=False):
-        assert exp == act
-
-    dts_txt = dts_path.read_text(encoding="utf-8")
-    assert "export interface MergedRow" in dts_txt
-    assert "time:" in dts_txt and "volume:" in dts_txt
+    num = pd.to_numeric(s, errors="coerce")
+    if not num.isna().all():
+        median_val = float(num.median(skipna=True))
+        if median_val > 1e12:
+            num = (num // 1000).astype("Int64")
+        else:
+            num = num.astype("Int64")
+        if not num.isna().all():
+            return num.astype("int64")
+    # fall back: return original numeric-converted series
+    return num
 
 
-def test_csv_to_json_array_and_dts_matches_expected(tmp_path: Path) -> None:
+def canonical_records_from_csv(
+    csv_path: str | Path,
+    *,
+    camel_case: bool = True,
+    time_col: str = "time",
+    float_round: int | None = None,
+) -> List[Dict[str, Any]]:
     """
-    Convert the test CSV to a single JSON array + .d.ts and assert the
-    array content matches the expected canonical records.
+    Read CSV, apply canonicalization similar to csv2json, and return
+    a list of plain Python records suitable for comparison.
+
+    - camel_case: convert column names to camelCase
+    - time_col: name of the timestamp column to coerce to seconds
+    - float_round: optional number of decimals to round floats to
     """
-    data_dir = Path("tests") / "data"
-    in_path = data_dir / "gc_011224_020524_1m.csv"
-    _ensure_test_csv(in_path)
+    df = pd.read_csv(csv_path)
 
-    expected = canonical_records_from_csv(in_path, camel_case=True)
+    if camel_case:
+        df = df.rename(columns={c: _to_camel(c) for c in df.columns})
 
-    out = tmp_path / "merged.json"
-    dts_path = out.with_suffix(out.suffix + ".d.ts")
+    if time_col in df.columns:
+        df[time_col] = _coerce_time_series(df[time_col])
 
-    csv2json.csv_to_json_array(
-        input_path=in_path,
-        output_path=out,
-        camel_case=True,
-        generate_dts=True,
-        interface_name="MergedRow",
-    )
+    records: List[Dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        out: Dict[str, Any] = {}
+        for k, v in row.items():
+            if pd.isna(v):
+                out[k] = None
+                continue
 
-    assert out.exists()
-    assert dts_path.exists()
+            # Numbers (numpy ints/floats included) are instances of Number
+            if isinstance(v, Number) and not isinstance(v, bool):
+                if isinstance(v, float):
+                    if float_round is not None:
+                        out[k] = round(float(v), float_round)
+                    else:
+                        out[k] = float(v)
+                else:
+                    out[k] = int(v)
+                continue
 
-    data = json.loads(out.read_text(encoding="utf-8"))
-    assert isinstance(data, list)
-    assert len(data) == len(expected)
+            # Fallback: keep as-is (strings, etc.)
+            out[k] = v
+        records.append(out)
 
-    # row-by-row semantic comparison
-    for exp, act in zip(expected, data, strict=False):
-        assert exp == act
-
-    dts_txt = dts_path.read_text(encoding="utf-8")
-    assert "export interface MergedRow" in dts_txt
-    assert "open:" in dts_txt and "close:" in dts_txt
+    return records
