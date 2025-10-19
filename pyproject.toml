@@ -43,6 +43,9 @@ line_length = 88
 [tool.ruff]
 line-length = 88
 
+[tool.black]
+line-length = 88
+
 [tool.ruff.lint]
 # A sensible default set of rules; tune as your project grows
 select = ["E", "F", "W", "C", "I", "B", "TC"]
