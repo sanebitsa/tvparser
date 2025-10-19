@@ -15,3 +15,4 @@ build/
 .eggs/
 .env
 .env.*
+.coverage
