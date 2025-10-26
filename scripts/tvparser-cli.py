@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import json
+import pandas as pd
 import sys
 import re
 from pathlib import Path
@@ -352,6 +354,158 @@ def cmd_extract_and_json(argv: list[str]) -> int:
     return 0
 
 
+def _resolve_json_path(arg: str | None) -> Path:
+    """Resolve json file or directory relative to BASE_DIR."""
+    if arg is None:
+        return BASE_DIR / "range_breakout.timestamps.json"
+    p = Path(arg)
+    if arg.find(os.sep) != -1 or p.suffix == ".json":
+        return p
+    candidate = BASE_DIR / arg
+    if candidate.with_suffix(".json").exists():
+        return candidate.with_suffix(".json")
+    if candidate.is_dir():
+        return candidate
+    return p
+
+
+def cmd_build_from_json(argv: list[str]) -> int:
+    """
+    Build CSV files from JSON timestamp arrays using tvparser.slicer.
+    If the json argument is a simple basename (no path / no suffix),
+    create BASE_DIR/PascalCase(basename) and write outputs there.
+    """
+    p = argparse.ArgumentParser(prog="tvparser build")
+    p.add_argument(
+        "json_path",
+        nargs="?",
+        help=(
+            "JSON file (array) or directory of JSON files, or a basename "
+            "in base dir (e.g. 'range_breakout')."
+        ),
+    )
+    p.add_argument(
+        "out_dir",
+        nargs="?",
+        help="Optional explicit output directory for built CSVs.",
+    )
+    p.add_argument(
+        "--csv",
+        dest="csv",
+        default=str(DEFAULT_CSV),
+        help=f"Merged CSV path (default: {DEFAULT_CSV})",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing output files",
+    )
+    args = p.parse_args(argv)
+
+    # require slicer module and function (fail fast if missing)
+    try:
+        import tvparser.slicer as slicer_mod  # type: ignore
+    except Exception as exc:
+        print(
+            "error: tvparser.slicer is required but not importable:",
+            exc,
+            file=sys.stderr,
+        )
+        return 2
+
+    if not hasattr(slicer_mod, "slice_csv_window"):
+        print(
+            "error: tvparser.slicer.slice_csv_window is required " "but not found.",
+            file=sys.stderr,
+        )
+        return 2
+
+    raw_arg = args.json_path
+    json_resolved = _resolve_json_path(raw_arg)
+
+    # determine list of json files to process
+    if json_resolved.is_dir():
+        json_files = sorted(json_resolved.glob("*.json"))
+    elif json_resolved.is_file():
+        json_files = [json_resolved]
+    else:
+        print("json path not found:", json_resolved, file=sys.stderr)
+        return 2
+
+    if not json_files:
+        print("no JSON files to process at", json_resolved, file=sys.stderr)
+        return 0
+
+    csv_path = _resolve_csv_path(args.csv)
+    if not csv_path.exists():
+        print("merged CSV not found:", csv_path, file=sys.stderr)
+        return 2
+
+    # Decide output base dir:
+    # 1) explicit -- out_dir
+    # 2) if user passed a bare basename (no sep, no suffix) -> PascalCase under BASE_DIR
+    # 3) json_resolved is a file -> same parent
+    # 4) json_resolved is a dir -> that dir
+    # 5) otherwise fallback to BASE_DIR/SlrunBuilt (unlikely)
+    if args.out_dir:
+        out_base = Path(args.out_dir)
+    elif raw_arg and raw_arg.find(os.sep) == -1 and not Path(raw_arg).suffix:
+        # user provided a bare name such as "range_breakout"
+        out_base = BASE_DIR / _to_output_dir_name(raw_arg)
+    elif json_resolved.is_file():
+        out_base = json_resolved.parent
+    elif json_resolved.is_dir():
+        out_base = json_resolved
+    else:
+        out_base = BASE_DIR / "SlrunBuilt"
+
+    out_base.mkdir(parents=True, exist_ok=True)
+
+    written = []
+    for jf in json_files:
+        try:
+            data = json.loads(jf.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"failed to load {jf}: {exc}", file=sys.stderr)
+            continue
+
+        if not isinstance(data, list):
+            print(f"skipping {jf}: expected JSON array", file=sys.stderr)
+            continue
+
+        for rec in data:
+            if not isinstance(rec, dict):
+                print(f"skipping record (not object) in {jf}: {rec}", file=sys.stderr)
+                continue
+            try:
+                start = int(rec["start"])
+                end = int(rec["end"])
+            except Exception as exc:
+                print(f"bad record in {jf}: {rec} ({exc})", file=sys.stderr)
+                continue
+
+            out_name = f"{start}.csv"
+            outp = out_base / out_name
+
+            if outp.exists() and not args.force:
+                # skip existing file
+                continue
+
+            try:
+                # Use the library slicer directly — must exist per policy
+                # expected signature:
+                # slice_csv_window(csv_path, start, end, out_path, force=False)
+                slicer_mod.slice_csv_window(csv_path, start, end, outp)
+                written.append(outp)
+            except Exception as exc:
+                print(f"failed to create {outp}: {exc}", file=sys.stderr)
+                # continue with other records
+                continue
+
+    print(f"Wrote {len(written)} CSV files to {out_base}")
+    return 0
+
+
 def main() -> int:
     top = argparse.ArgumentParser(prog="tvparser-cli")
     subs = top.add_subparsers(dest="cmd", required=True)
@@ -361,6 +515,7 @@ def main() -> int:
         "extract-json",
         help="Extract windows then convert produced CSVs to .json",
     )
+    subs.add_parser("build", help="Build CSVs from JSON timestamp arrays")
 
     if len(sys.argv) < 2:
         top.print_help()
@@ -375,6 +530,8 @@ def main() -> int:
         return cmd_json(argv)
     if cmd == "extract-json":
         return cmd_extract_and_json(argv)
+    if cmd == "build":
+        return cmd_build_from_json(argv)
 
     print("unknown command:", cmd, file=sys.stderr)
     top.print_help()
