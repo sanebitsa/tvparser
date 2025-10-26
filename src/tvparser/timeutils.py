@@ -39,14 +39,15 @@ def _parse_time(time_str: str) -> Tuple[int, int]:
 
 
 def _tzinfo_for_name(tz: Union[str, None]) -> tzinfo:
-    """Return tzinfo from name; fallback to UTC if ZoneInfo missing."""
     if tz is None or tz == "UTC":
         return timezone.utc
     if ZoneInfo is None:
-        # zoneinfo not available; warn and fall back to UTC
-        LOGGER.debug("zoneinfo not available, falling back to UTC for %s", tz)
+        LOGGER.debug("zoneinfo not available, falling back to UTC")
         return timezone.utc
-    return ZoneInfo(tz)
+    try:
+        return ZoneInfo(tz)
+    except Exception as exc:
+        raise ValueError(f"unknown timezone {tz!r}") from exc
 
 
 def to_timestamp(
@@ -55,6 +56,7 @@ def to_timestamp(
     tz: Union[str, None] = "UTC",
     *,
     to_ms: bool = False,
+    fold: int | None = None,
 ) -> int:
     """
     Convert date + time to unix epoch seconds (or ms if to_ms=True).
@@ -68,6 +70,8 @@ def to_timestamp(
 
     tzinfo = _tzinfo_for_name(tz)
     dt = datetime(year, month, day, hour, minute, tzinfo=tzinfo)
+    if fold is not None:
+        dt = dt.replace(fold=fold)
     ts = int(dt.timestamp())
     return ts * 1000 if to_ms else ts
 
@@ -100,3 +104,22 @@ def window_start_end(
     if to_ms:
         return (start * 1000, end * 1000)
     return (start, end)
+
+
+SECONDS_PER_DAY = 86400
+
+
+def align_into_window(ts: int, start_ts: int, end_ts: int) -> int:
+    if start_ts <= ts <= end_ts:
+        return ts
+    if ts < start_ts:
+        steps = (start_ts - ts + SECONDS_PER_DAY - 1) // SECONDS_PER_DAY
+        cand = ts + steps * SECONDS_PER_DAY
+        if cand <= end_ts:
+            return cand
+    if ts > end_ts:
+        steps = (ts - end_ts + SECONDS_PER_DAY - 1) // SECONDS_PER_DAY
+        cand = ts - steps * SECONDS_PER_DAY
+        if cand >= start_ts:
+            return cand
+    return ts
