@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Tuple, Union
 
 try:
@@ -38,7 +38,7 @@ def _parse_time(time_str: str) -> Tuple[int, int]:
     return hour, minute
 
 
-def _tzinfo_for_name(tz: Union[str, None]) -> timezone:
+def _tzinfo_for_name(tz: Union[str, None]) -> tzinfo:
     """Return tzinfo from name; fallback to UTC if ZoneInfo missing."""
     if tz is None or tz == "UTC":
         return timezone.utc
