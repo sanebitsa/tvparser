@@ -45,6 +45,9 @@ COLUMN_ALIASES: Dict[str, str] = {
     "volume": "volume",
 }
 
+# default indicators we'll auto-detect if indicators is None
+_INDICATOR_DEFAULTS = ["ema", "vwap", "atr"]
+
 
 class TVParserError(Exception):
     """Base exception for tvparser core errors."""
@@ -101,7 +104,9 @@ def _detect_and_normalize_time_series(
     if numeric.isna().all():
         return numeric, False
 
+    # Use median as a robust central tendency to detect ms vs s.
     median_val = float(numeric.median(skipna=True))
+    # Millisecond timestamps for modern dates are ~1e12 (e.g. 1_736_722_800_000)
     if median_val > 1e12:
         converted = (numeric // 1000).astype("Int64")
         return converted, True
@@ -109,13 +114,43 @@ def _detect_and_normalize_time_series(
     return numeric.astype("Int64"), False
 
 
-def normalize(df: pd.DataFrame, drop_incomplete: bool = True) -> pd.DataFrame:
+def _coerce_indicator_columns(
+    df: pd.DataFrame, indicators: Optional[Iterable[str]] = None
+) -> pd.DataFrame:
+    """
+    Coerce indicator columns to Float64 where present.
+
+    - If indicators is None, auto-detect common indicators listed in
+      _INDICATOR_DEFAULTS.
+    - If indicators is provided, coerce only those names that exist.
+    """
+    if df is None or df.empty:
+        return df
+
+    if indicators is None:
+        to_check = [c for c in _INDICATOR_DEFAULTS if c in df.columns]
+    else:
+        to_check = [c for c in indicators if c in df.columns]
+
+    for col in to_check:
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype("Float64")
+
+    return df
+
+
+def normalize(
+    df: pd.DataFrame,
+    drop_incomplete: bool = True,
+    indicators: Optional[Iterable[str]] = None,
+) -> pd.DataFrame:
     """
     Normalize a raw DataFrame into canonical typed columns.
 
     - canonical columns: time, open, high, low, close, volume
     - time is integer seconds (auto-convert ms->s)
     - OHLC -> Float64, volume -> Int64
+    - optional: coerce indicator columns (ema, vwap, atr, or the
+      names passed via `indicators`) to Float64.
     """
     if df is None:
         raise ValueError("normalize: df must not be None")
@@ -142,19 +177,18 @@ def normalize(df: pd.DataFrame, drop_incomplete: bool = True) -> pd.DataFrame:
         LOGGER.debug("normalize: converted timestamps from ms to s")
 
     for col in ("open", "high", "low", "close"):
-        work[col] = pd.to_numeric(work[col], errors="coerce").astype(
-            "Float64"
-        )
+        work[col] = pd.to_numeric(work[col], errors="coerce").astype("Float64")
 
-    work["volume"] = pd.to_numeric(work["volume"], errors="coerce").astype(
-        "Int64"
-    )
+    work["volume"] = pd.to_numeric(work["volume"], errors="coerce").astype("Int64")
 
     if drop_incomplete:
         before = len(work)
         work = work.dropna(subset=REQUIRED_COLUMNS)
         after = len(work)
         LOGGER.debug("normalize: dropped %d rows", before - after)
+
+    # coerce indicator columns if requested (or auto-detect)
+    work = _coerce_indicator_columns(work, indicators)
 
     if "time" in work.columns and not work["time"].isna().all():
         work["time"] = work["time"].astype("int64")
@@ -175,14 +209,10 @@ def deduplicate(df: pd.DataFrame, strategy: str = "last") -> pd.DataFrame:
         raise MissingColumnsError("time required for deduplication")
 
     if strategy == "last":
-        return df.drop_duplicates(subset=["time"], keep="last").reset_index(
-            drop=True
-        )
+        return df.drop_duplicates(subset=["time"], keep="last").reset_index(drop=True)
 
     if strategy == "first":
-        return df.drop_duplicates(subset=["time"], keep="first").reset_index(
-            drop=True
-        )
+        return df.drop_duplicates(subset=["time"], keep="first").reset_index(drop=True)
 
     if strategy == "max_volume":
         idx = df.groupby("time")["volume"].idxmax()
@@ -199,8 +229,13 @@ def merge_frames(
     dedupe_strategy: str = "last",
     drop_incomplete: bool = True,
     sort_order: str = "asc",
+    indicators: Optional[Iterable[str]] = None,
 ) -> pd.DataFrame:
-    """Merge frames (or file paths) into a single canonical DataFrame."""
+    """Merge frames (or file paths) into a single canonical DataFrame.
+
+    New optional `indicators` parameter is forwarded to normalize so callers
+    can request explicit indicator coercion. Default None -> auto detect.
+    """
     dfs: List[pd.DataFrame] = []
     from . import io as io_module  # local import avoids circular import
 
@@ -210,8 +245,10 @@ def merge_frames(
         if isinstance(item, pd.DataFrame):
             raw = item
         else:
+            # allow both Path and str; io.read_csv accepts a path-like
             raw = io_module.read_csv(str(item))
-        norm = normalize(raw, drop_incomplete=drop_incomplete)
+        # forward indicators setting into normalize
+        norm = normalize(raw, drop_incomplete=drop_incomplete, indicators=indicators)
         if not norm.empty:
             dfs.append(norm)
 
@@ -223,9 +260,7 @@ def merge_frames(
 
     asc = sort_order == "asc"
     if "time" in deduped.columns and not deduped.empty:
-        deduped = deduped.sort_values("time", ascending=asc).reset_index(
-            drop=True
-        )
+        deduped = deduped.sort_values("time", ascending=asc).reset_index(drop=True)
 
     return deduped
 
@@ -251,11 +286,7 @@ def summarize(df: pd.DataFrame) -> Dict[str, Optional[int]]:
         if "time" in df.columns and not df["time"].isna().all()
         else None
     )
-    duplicates = (
-        int(df["time"].duplicated().sum())
-        if "time" in df.columns
-        else 0
-    )
+    duplicates = int(df["time"].duplicated().sum()) if "time" in df.columns else 0
 
     return {
         "rows": rows,
